@@ -1,7 +1,7 @@
 {
   "id": "pelistv",
   "name": "Pelis-TV",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "apiVersion": 6,
   "entry": "plugin.js",
   "description": " películas y series, hasta 4K",
@@ -9,7 +9,8 @@
   "hosts": [
     "api.themoviedb.org",
     "vidlink.pro",
-    "enc-dec.app"
+    "enc-dec.app",
+    "bcdn.hakunaymatata.com"
   ],
   "streamHosts": "any",
   "capabilities": [
