@@ -1,5 +1,4 @@
 // src/plugin.js
-var TMDB_BASE = "https://api.themoviedb.org/3";
 var IMG_W500 = "https://image.tmdb.org/t/p/w500";
 var IMG_W1280 = "https://image.tmdb.org/t/p/w1280";
 var IMG_W300 = "https://image.tmdb.org/t/p/w300";
@@ -14,11 +13,10 @@ var VL_HEADERS = {
 // Cabeceras del reproductor: los CDN de los videos rechazan los User-Agent de navegador de escritorio
 // (error 428) en las peticiones por rango, así que se manda el de un reproductor de Android.
 var STREAM_HEADERS = { "User-Agent": "okhttp/4.12.0", "Referer": "https://moviebox.ph/" };
-function apiKey() {
-  return kino.config.get("tmdbKey") || null;
-}
+// La llave de TMDB ya no se pide en este plugin: se usa la de Kino (Ajustes ▸ «Tu llave de TMDB»)
+// o la de un addon de TMDB de Stremio, ambas por kino.tmdb.
 var hasKinoTmdb = () => typeof kino.tmdb === "function";
-var NO_KEY_MESSAGE = "Necesitas una llave de TMDB: ponla en este plugin o en Ajustes \u25B8 \xABTu llave de TMDB\xBB, o instala un addon de TMDB de Stremio con tu llave.";
+var NO_KEY_MESSAGE = "Necesitas una llave de TMDB: ponla en Ajustes \u25B8 \xABTu llave de TMDB\xBB (Kino 0.9.53 o m\xE1s nueva), o instala un addon de TMDB de Stremio con tu llave.";
 function noKey() {
   return kino.error("unavailable", "no TMDB key", { userMessage: NO_KEY_MESSAGE });
 }
@@ -37,21 +35,8 @@ function splitQuery(path) {
 var isSpanish = () => String(kino.lang || "").toLowerCase().startsWith("es");
 var T = (es, en) => isSpanish() ? es : en;
 var withLanguage = (path) => /[?&]language=/.test(path) ? path : path + (path.includes("?") ? "&" : "?") + "language=" + (isSpanish() ? "es-MX" : "en-US");
-function tmdbStatusError(status) {
-  if (status === 401 || status === 403) return kino.error("unavailable", "TMDB " + status, { userMessage: "La llave de TMDB no es v\xE1lida. Rev\xEDsala en este plugin o en Ajustes \u25B8 \xABTu llave de TMDB\xBB." });
-  if (status === 429) return kino.error("rate_limited", "TMDB " + status, { userMessage: "TMDB recibi\xF3 demasiadas peticiones. Espera un momento e int\xE9ntalo de nuevo." });
-  return kino.error("unavailable", "TMDB " + status, { userMessage: "TMDB no responde ahora. Int\xE9ntalo de nuevo en un rato." });
-}
-var TMDB_MS = 8e3;
 async function tmdb(rawPath) {
   const path = withLanguage(rawPath);
-  const k = apiKey();
-  if (k) {
-    const sep = path.includes("?") ? "&" : "?";
-    const r = await kino.fetch(`${TMDB_BASE}${path}${sep}api_key=${k}`, { timeoutMs: TMDB_MS });
-    if (!r.ok) throw tmdbStatusError(r.status);
-    return r.json();
-  }
   if (!hasKinoTmdb()) throw noKey();
   const q = splitQuery(path);
   try {
@@ -61,7 +46,7 @@ async function tmdb(rawPath) {
     throw e;
   }
 }
-var canTmdb = () => !!apiKey() || hasKinoTmdb();
+var canTmdb = () => hasKinoTmdb();
 function toItem(m) {
   const isTv = m.media_type === "tv" || !m.media_type && !!m.first_air_date;
   const kind = isTv ? "series" : "movie";
@@ -275,7 +260,7 @@ async function encryptId(tmdbId) {
   const enc = data && typeof data.result === "string" && data.result ? data.result : null;
   if (!enc) {
     throw kino.error("unavailable", "enc-dec sin resultado", {
-      userMessage: T("enc-dec.app no devolvió el código para este título.", "enc-dec.app did not return the code for this title.")
+      userMessage: T("enc-dec.app no devolvi\xF3 el c\xF3digo para este t\xEDtulo.", "enc-dec.app did not return the code for this title.")
     });
   }
   return enc;
@@ -283,6 +268,14 @@ async function encryptId(tmdbId) {
 function mimeOf(url, type) {
   if (/m3u8|hls/i.test(String(type || "")) || /\.m3u8(\?|$)/i.test(url)) return HLS;
   return "video/mp4";
+}
+// Solo el nombre del servidor (nunca la dirección completa: puede llevar claves).
+function hostOf(url) {
+  try {
+    return new URL(url).hostname;
+  } catch (e) {
+    return "?";
+  }
 }
 async function vidlinkStreams(tmdbId, mediaType, season, episode) {
   const enc = await encryptId(tmdbId);
@@ -318,7 +311,10 @@ async function vidlinkStreams(tmdbId, mediaType, season, episode) {
     out.push({ url: data.url, quality: data.quality || "auto", mime: mimeOf(data.url, data.type) });
   }
   kino.log("vidlink: " + out.length + " fuente(s) para " + mediaType + " " + tmdbId);
-  return out.sort((a, b) => qualRank(b.quality) - qualRank(a.quality));
+  const sorted = out.sort((a, b) => qualRank(b.quality) - qualRank(a.quality));
+  // Para saber qué servidor del video rechaza al reproductor (error 429): calidad, tipo y servidor.
+  kino.log("vidlink fuentes: " + sorted.map((s) => s.quality + "/" + (s.mime === HLS ? "hls" : "mp4") + "@" + hostOf(s.url)).join(", "));
+  return sorted;
 }
 var labelOf = (q) => q === "auto" ? void 0 : /^\d{3,4}$/.test(String(q)) ? q + "p" : String(q);
 async function resolveRef(ref) {
