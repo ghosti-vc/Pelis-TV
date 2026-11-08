@@ -4,7 +4,7 @@
   "version": "1.0.1",
   "apiVersion": 6,
   "entry": "plugin.js",
-  "description": "Catálogo TMDB con películas y series, hasta 4K",
+  "description": " películas y series, hasta 4K",
   "author": "ghosti-vc",
   "hosts": [
     "api.themoviedb.org",
