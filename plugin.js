@@ -13,6 +13,14 @@ var VL_HEADERS = {
 // Cabeceras del reproductor: los CDN de los videos rechazan los User-Agent de navegador de escritorio
 // (error 428) en las peticiones por rango, así que se manda el de un reproductor de Android.
 var STREAM_HEADERS = { "User-Agent": "okhttp/4.12.0", "Referer": "https://moviebox.ph/" };
+// El servidor *.hakunaymatata.com (el de los videos de MovieBox) responde 429 cuando la petición trae un Referer
+// que no es el suyo, aunque la dirección esté bien firmada: ahí se manda solo el User-Agent, sin Referer.
+var NO_REFERER_HEADERS = { "User-Agent": "okhttp/4.12.0" };
+var NO_REFERER_HOSTS = ["hakunaymatata.com"];
+function streamHeadersFor(url) {
+  const host = hostOf(url);
+  return NO_REFERER_HOSTS.some((h) => host === h || host.endsWith("." + h)) ? NO_REFERER_HEADERS : STREAM_HEADERS;
+}
 // La llave de TMDB ya no se pide en este plugin: se usa la de Kino (Ajustes ▸ «Tu llave de TMDB»)
 // o la de un addon de TMDB de Stremio, ambas por kino.tmdb.
 var hasKinoTmdb = () => typeof kino.tmdb === "function";
@@ -334,7 +342,8 @@ async function resolveRef(ref) {
     });
   }
   const [best, ...rest] = streams;
-  const one = (s) => ({ url: s.url, mime: s.mime, ...labelOf(s.quality) ? { label: labelOf(s.quality) } : {}, headers: STREAM_HEADERS });
+  kino.log("cabeceras del video: " + (streamHeadersFor(best.url).Referer ? "con Referer" : "sin Referer") + " @" + hostOf(best.url));
+  const one = (s) => ({ url: s.url, mime: s.mime, ...labelOf(s.quality) ? { label: labelOf(s.quality) } : {}, headers: streamHeadersFor(s.url) });
   return {
     ...one(best),
     alternatives: rest.slice(0, 8).map(one)
