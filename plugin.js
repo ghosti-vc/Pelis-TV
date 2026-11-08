@@ -302,7 +302,10 @@ async function vidlinkStreams(tmdbId, mediaType, season, episode) {
   } catch (e) {
     kino.log("vidlink: respuesta que no es JSON");
   }
-  if (!data || typeof data !== "object") return [];
+  if (!data || typeof data !== "object") {
+    kino.log("vidlink: respuesta vac\xEDa (http " + r.status + ", " + (data === null ? "null" : typeof data) + ") para " + mediaType + " " + tmdbId);
+    return [];
+  }
   const out = [];
   const stream = data.stream && typeof data.stream === "object" ? data.stream : null;
   if (stream && stream.qualities && typeof stream.qualities === "object") {
@@ -319,20 +322,37 @@ async function vidlinkStreams(tmdbId, mediaType, season, episode) {
     out.push({ url: data.url, quality: data.quality || "auto", mime: mimeOf(data.url, data.type) });
   }
   kino.log("vidlink: " + out.length + " fuente(s) para " + mediaType + " " + tmdbId);
+  if (!out.length) kino.log("vidlink campos: " + Object.keys(data).slice(0, 8).join(",") + (stream ? " | stream: " + Object.keys(stream).slice(0, 8).join(",") : ""));
   const sorted = out.sort((a, b) => qualRank(b.quality) - qualRank(a.quality));
   // Para saber qué servidor del video rechaza al reproductor (error 429): calidad, tipo y servidor.
   kino.log("vidlink fuentes: " + sorted.map((s) => s.quality + "/" + (s.mime === HLS ? "hls" : "mp4") + "@" + hostOf(s.url)).join(", "));
   return sorted;
 }
 var labelOf = (q) => q === "auto" ? void 0 : /^\d{3,4}$/.test(String(q)) ? q + "p" : String(q);
+// Si vidlink no trae fuentes, se intenta una vez más (a veces falla un momento); solo si queda tiempo,
+// porque Kino corta el resolve a los 20 segundos.
+async function withRetry(load) {
+  const t0 = Date.now();
+  let streams = await load();
+  if (!streams.length && Date.now() - t0 < 8e3) {
+    kino.log("vidlink: sin fuentes, un reintento");
+    try {
+      if (typeof kino.sleep === "function") await kino.sleep(700);
+      streams = await load();
+    } catch (e) {
+      kino.log("vidlink: el reintento tambi\xE9n fall\xF3");
+    }
+  }
+  return streams;
+}
 async function resolveRef(ref) {
   const parts = ref.split(":");
   let streams;
   if (parts[0] === "movie") {
-    streams = await vidlinkStreams(parts[1], "movie");
+    streams = await withRetry(() => vidlinkStreams(parts[1], "movie"));
   } else if (parts[0] === "ep") {
     const [, tmdbId, season, episode] = parts;
-    streams = await vidlinkStreams(tmdbId, "tv", season, episode);
+    streams = await withRetry(() => vidlinkStreams(tmdbId, "tv", season, episode));
   } else {
     throw kino.error("not_found");
   }
