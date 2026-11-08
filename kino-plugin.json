@@ -1,7 +1,7 @@
 {
   "id": "pelistv",
   "name": "Pelis-TV",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "apiVersion": 6,
   "entry": "plugin.js",
   "description": " películas y series, hasta 4K",
