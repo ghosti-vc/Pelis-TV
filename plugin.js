@@ -329,30 +329,14 @@ async function vidlinkStreams(tmdbId, mediaType, season, episode) {
   return sorted;
 }
 var labelOf = (q) => q === "auto" ? void 0 : /^\d{3,4}$/.test(String(q)) ? q + "p" : String(q);
-// Si vidlink no trae fuentes, se intenta una vez más (a veces falla un momento); solo si queda tiempo,
-// porque Kino corta el resolve a los 20 segundos.
-async function withRetry(load) {
-  const t0 = Date.now();
-  let streams = await load();
-  if (!streams.length && Date.now() - t0 < 8e3) {
-    kino.log("vidlink: sin fuentes, un reintento");
-    try {
-      if (typeof kino.sleep === "function") await kino.sleep(700);
-      streams = await load();
-    } catch (e) {
-      kino.log("vidlink: el reintento tambi\xE9n fall\xF3");
-    }
-  }
-  return streams;
-}
 async function resolveRef(ref) {
   const parts = ref.split(":");
   let streams;
   if (parts[0] === "movie") {
-    streams = await withRetry(() => vidlinkStreams(parts[1], "movie"));
+    streams = await vidlinkStreams(parts[1], "movie");
   } else if (parts[0] === "ep") {
     const [, tmdbId, season, episode] = parts;
-    streams = await withRetry(() => vidlinkStreams(tmdbId, "tv", season, episode));
+    streams = await vidlinkStreams(tmdbId, "tv", season, episode);
   } else {
     throw kino.error("not_found");
   }
