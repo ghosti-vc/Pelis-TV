@@ -1,7 +1,7 @@
 {
   "id": "reloj-kino",
   "name": "Reloj",
-  "version": "0.9.125",
+  "version": "0.9.126",
   "apiVersion": 23,
   "entry": "plugin.js",
   "description": "Ve el reloj en la esquina superior derecha del reproductor en la TV cada que veas canales en vivo, pelicuals o series sin interrumpir la reproduccion. En el inicio se puede ver al presionar el simbolo de reloj e. la pantallade ajustes (plugins)",
@@ -116,8 +116,8 @@
       "labelEn": "Ends at...",
       "type": "select",
       "default": "off",
-      "hint": "La hora en que termina lo que ves (series y películas). «Ocultar»: solo aparece al presionar el control.",
-      "hintEn": "The time what you are watching ends (series and movies). \"Hide\": only shows when the controls are on screen.",
+      "hint": "Hora en que termina lo que ves. «Ocultar»: solo con los controles.",
+      "hintEn": "When what you watch ends. \"Hide\": only with controls on screen.",
       "options": [
         {
           "value": "off",
