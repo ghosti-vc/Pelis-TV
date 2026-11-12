@@ -1185,6 +1185,71 @@ async function phCandidates(path) {
   return out;
 }
 
+// ---- Filas nuevas del inicio: Estrenos y Mejor valoradas ----
+// Se arman con lo que ya trae el listado de PelisJuanita y HackStore (año y puntuación); no usan datos nuevos del sitio.
+// Cada "página" junta 3 páginas del listado reciente para tener de dónde elegir.
+const CHUNK = 3;
+const listCache = new Map();
+function cachedListing(url) {
+  const hit = listCache.get(url);
+  if (hit && Date.now() - hit.t < 60000) return hit.p;
+  const p = getJson(url, PJ + "/");
+  listCache.set(url, { t: Date.now(), p });
+  p.catch(() => listCache.delete(url));
+  return p;
+}
+
+async function pjChunk(kind, n) {
+  const apiKind = kind === "movie" ? "movie" : "serie";
+  const urls = [];
+  for (let i = 0; i < CHUNK; i++) urls.push(PJ_API + "/listing?kind=" + apiKind + "&order=recent&page=" + ((n - 1) * CHUNK + 1 + i));
+  const res = await Promise.allSettled(urls.map(cachedListing));
+  const raw = [];
+  let hasNext = false;
+  let ok = 0;
+  res.forEach((r) => {
+    if (r.status !== "fulfilled") return;
+    ok++;
+    const d = r.value || {};
+    const items = d.items || [];
+    for (const x of items) raw.push(x);
+    const p = d.pagination || {};
+    hasNext = p.has_next !== undefined ? !!p.has_next : items.length >= 24;
+  });
+  if (!ok) throw (res[0] && res[0].reason) || kino.error("unavailable", "PelisJuanita no respondió");
+  return { raw, hasNext };
+}
+
+// Estrenos: los del año actual; si son pocos, también los del año anterior.
+function onlyNew(items) {
+  const y = new Date().getFullYear();
+  const a = items.filter((x) => x.year >= y);
+  return a.length >= 8 ? a : items.filter((x) => x.year >= y - 1);
+}
+
+async function pjNewPage(kind, n) {
+  const c = await pjChunk(kind, n);
+  return { items: onlyNew(c.raw.map((x) => pjItem(x, kind)).filter(Boolean)), hasNext: c.hasNext };
+}
+
+async function hsNewPage(kind, n) {
+  const res = await Promise.allSettled([0, 1, 2].map((i) => hsPage(kind, (n - 1) * CHUNK + 1 + i)));
+  const items = [];
+  let hasNext = false;
+  let ok = 0;
+  res.forEach((r) => { if (r.status === "fulfilled") { ok++; for (const x of r.value.items) items.push(x); hasNext = r.value.hasNext; } });
+  if (!ok) throw (res[0] && res[0].reason) || kino.error("unavailable", "HackStore no respondió");
+  return { items: onlyNew(items), hasNext };
+}
+
+// Mejor valoradas: de lo que trae cada tanda, las de mayor puntuación primero.
+async function pjRatedPage(kind, n) {
+  const c = await pjChunk(kind, n);
+  const score = (o) => Number(o && (o.rating_avg || o.vote_average)) || 0;
+  const raw = c.raw.filter((o) => score(o) > 0).sort((a, b) => score(b) - score(a));
+  return { items: raw.map((x) => pjItem(x, kind)).filter(Boolean), hasNext: c.hasNext };
+}
+
 // ---- Secciones ----------------------------------------------------------------------------------
 
 const SECTIONS = {
@@ -1193,6 +1258,10 @@ const SECTIONS = {
   turcas: { genre: "series", parts: [() => (n) => stPage(n)] },
   toons: { genre: "series", parts: [() => (n) => lcPage(n)] },
   anime: { genre: "series", parts: [() => (n) => pjPage("anime", n), () => (n) => hsPage("anime", n)] },
+  "estrenos-peliculas": { genre: "peliculas", parts: [() => (n) => pjNewPage("movie", n), () => (n) => hsNewPage("movie", n)] },
+  "estrenos-series": { genre: "series", parts: [() => (n) => pjNewPage("series", n), () => (n) => hsNewPage("series", n)] },
+  "valoradas-peliculas": { genre: "peliculas", parts: [() => (n) => pjRatedPage("movie", n)] },
+  "valoradas-series": { genre: "series", parts: [() => (n) => pjRatedPage("series", n)] },
 };
 
 const SRC_PRIO = { pj: 0, hs: 1, po: 2, cu: 3, tp: 4, cc: 5, fc: 6, pp: 7, sf: 8, ph: 9, sm: 10, pf: 11, lc: 12, st: 13 };
@@ -1247,8 +1316,12 @@ async function sectionPage(sec, n) {
 export async function home() {
   await null;
   const defs = [
-    { id: "row-peliculas", ref: "peliculas", title: tr("Películas", "Movies") },
-    { id: "row-series", ref: "series", title: tr("Series", "Series") },
+    { id: "row-estrenos-peliculas", ref: "estrenos-peliculas", title: tr("Estrenos · Películas", "New · Movies") },
+    { id: "row-estrenos-series", ref: "estrenos-series", title: tr("Estrenos · Series", "New · Series") },
+    { id: "row-peliculas", ref: "peliculas", title: tr("Últimas agregadas · Películas", "Latest · Movies") },
+    { id: "row-series", ref: "series", title: tr("Últimas agregadas · Series", "Latest · Series") },
+    { id: "row-valoradas-peliculas", ref: "valoradas-peliculas", title: tr("Mejor valoradas · Películas", "Top rated · Movies") },
+    { id: "row-valoradas-series", ref: "valoradas-series", title: tr("Mejor valoradas · Series", "Top rated · Series") },
     { id: "row-anime", ref: "anime", title: tr("Anime", "Anime") },
     { id: "row-turcas", ref: "turcas", title: tr("Series turcas", "Turkish series") },
     { id: "row-toons", ref: "toons", title: tr("Caricaturas", "Cartoons") },
