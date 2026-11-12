@@ -1144,6 +1144,35 @@ async function sfCandidates(path) {
   return out;
 }
 
+// ---- PelisflixHD (ph): solo películas. ref: ph|m|/pelicula/<slug> ----
+const PH = "https://pelisflixhd.win";
+
+async function phSearch(q) {
+  const html = await getText(PH + "/?s=" + enc(q), { Referer: PH + "/" });
+  if (/No hay resultados/i.test(html)) return [];
+  return linkCards(html, PH, "/pelicula/", "ph", "movie");
+}
+
+async function phCandidates(path) {
+  const html = await getText(PH + path, { Referer: PH + "/" });
+  const out = [];
+  const re = /<li[^>]*data-server=["']([^"']+)["'][^>]*>([\s\S]*?)<\/li>/gi;
+  let m;
+  while ((m = re.exec(html))) {
+    try {
+      let d = atob(m[1]);
+      if (/iframe\/\?url=|watch\//.test(d)) { const q = /[?&]url=([^&]+)/i.exec(d); if (q) d = dec(q[1]); }
+      const u = absUrl(d);
+      if (!u) continue;
+      const lab = stripTags(m[2]).toUpperCase();
+      const lang = /CASTELLANO|ESP/.test(lab) ? 1 : /SUB/.test(lab) ? 2 : 0;
+      out.push({ url: u, label: "PelisflixHD · " + (lang === 0 ? "Latino" : lang === 1 ? "Castellano" : tr("Subtitulado", "Subbed")), referer: PH + "/", lang });
+    } catch (e) { /* no era base64 */ }
+  }
+  log("PelisflixHD servidores: " + out.map((x) => hostOf(x.url)).join(","));
+  return out;
+}
+
 // ---- Secciones ----------------------------------------------------------------------------------
 
 const SECTIONS = {
@@ -1154,7 +1183,7 @@ const SECTIONS = {
   anime: { genre: "series", parts: [() => (n) => pjPage("anime", n), () => (n) => hsPage("anime", n), () => (n) => fcPage("Anime", n)] },
 };
 
-const SRC_PRIO = { pj: 0, hs: 1, po: 2, cu: 3, tp: 4, cc: 5, fc: 6, pp: 7, sf: 8, sm: 9, pf: 10, lc: 11, st: 12 };
+const SRC_PRIO = { pj: 0, hs: 1, po: 2, cu: 3, tp: 4, cc: 5, fc: 6, pp: 7, sf: 8, ph: 9, sm: 10, pf: 11, lc: 12, st: 13 };
 
 function normTitle(t) {
   return String(t || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/\(\d{4}\)/g, "").replace(/[^a-z0-9]+/g, "");
@@ -1264,7 +1293,7 @@ export async function search(query) {
   const q = stripTags(query && query.q).slice(0, 100);
   if (!q) return [];
   const qa = q.normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[¡!¿?:,.]/g, " ").replace(/\s+/g, " ").trim() || q;
-  const tasks = [pjSearch(qa), hsSearch(qa), nxSearch("po", qa), nxSearch("cu", qa), tpSearch(qa), ccSearch(qa), smSearch(qa), sfSearch(qa), lcSearch(qa), stSearch(qa), ppSearch(qa), fcSearch(qa), pfSearch(qa)];
+  const tasks = [pjSearch(qa), hsSearch(qa), nxSearch("po", qa), nxSearch("cu", qa), tpSearch(qa), ccSearch(qa), smSearch(qa), sfSearch(qa), phSearch(qa), lcSearch(qa), stSearch(qa), ppSearch(qa), fcSearch(qa), pfSearch(qa)];
   const res = await Promise.allSettled(tasks);
   const all = [];
   res.forEach((r, i) => {
@@ -1348,6 +1377,7 @@ async function candidatesOf(src, spec) {
   if (src === "cc") return ccCandidates(dec(spec.split("|")[1]));
   if (src === "sm") return smCandidates(dec(spec.split("|")[1]));
   if (src === "sf") return sfCandidates(dec(spec.split("|")[1]));
+  if (src === "ph") return phCandidates(dec(spec.split("|")[1]));
   if (src === "lc") return lcCandidates(dec(spec.split("|")[1]));
   if (src === "st") return stCandidates(dec(spec.split("|")[1]));
   throw kino.error("not_found", "referencia desconocida");
