@@ -1185,6 +1185,178 @@ async function phCandidates(path) {
   return out;
 }
 
+// ---- DoramasFlix (df) y DoramasYT (dy): doramas ----
+// df ref: df|<m|s>|<id>|<slug>   episodio: df|e|<epId>      (se lee por su API pública GraphQL)
+// dy ref: dy|<m|s>|<url>         episodio: dy|e|<url>      (se lee por sus páginas)
+const DF = "https://doramasflix.io";
+const DF_API = "https://user-api.fluxcedene.net/graphql";
+const DY = "https://www.doramasyt.com";
+
+async function dfQuery(query, variables) {
+  let r;
+  try {
+    r = await kino.fetch(DF_API, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json", Origin: DF, Referer: DF + "/", "x-brand-host": "doramasflix.io", "x-forwarded-host": "doramasflix.io" },
+      body: JSON.stringify(variables ? { query, variables } : { query }),
+    });
+  } catch (e) {
+    throw kino.error("unavailable", "DoramasFlix no respondió", { userMessage: tr("DoramasFlix no respondió. Prueba de nuevo en un momento.", "DoramasFlix did not answer. Try again in a moment.") });
+  }
+  if (!r.ok) throw kino.error(r.status === 429 ? "rate_limited" : "unavailable", "DoramasFlix error " + r.status, { userMessage: tr("DoramasFlix respondió con el error " + r.status + ".", "DoramasFlix answered with error " + r.status + ".") });
+  let j;
+  try { j = JSON.parse(await r.text()); } catch (e) { j = null; }
+  if (!j || !j.data) throw kino.error("unavailable", "DoramasFlix devolvió algo inesperado", { userMessage: tr("DoramasFlix devolvió una respuesta que no entiendo.", "DoramasFlix returned a response I can't read.") });
+  return j.data;
+}
+
+function dfItem(x, kind) {
+  if (!x || !x.slug || !x._id) return null;
+  return mkItem("df", kind === "m" ? "movie" : "series", x._id + "|" + enc(x.slug), x.name_es || x.name, tmdbPoster(x.poster_path || x.poster));
+}
+
+async function dfPage(n) {
+  const d = await dfQuery("query C($page:Int,$limit:Int){paginationDorama(page:$page,limit:$limit){pageInfo{hasNextPage} items{_id slug name name_es poster_path poster}}}", { page: n, limit: 24 });
+  const o = (d && d.paginationDorama) || {};
+  return { items: (o.items || []).map((x) => dfItem(x, "s")).filter(Boolean), hasNext: !!(o.pageInfo && o.pageInfo.hasNextPage) };
+}
+
+async function dfSearch(q) {
+  const d = await dfQuery("query S($input:String,$limit:Int){searchDorama(input:$input,limit:$limit){_id slug name name_es poster_path poster} searchMovie(input:$input,limit:$limit){_id slug name name_es poster_path poster}}", { input: q, limit: 30 });
+  return ((d && d.searchDorama) || []).map((x) => dfItem(x, "s")).concat(((d && d.searchMovie) || []).map((x) => dfItem(x, "m"))).filter(Boolean);
+}
+
+async function dfEpisodes(id, slug) {
+  const title = stripTags(String(slug || "").replace(/-/g, " "));
+  const season = async (n) => {
+    const out = [];
+    for (let page = 1; page <= 3; page++) {
+      const d = await dfQuery('{paginationEpisode(filter:{serie_id:' + JSON.stringify(id) + ',season_number:' + n + '},page:' + page + ',limit:100){items{_id episode_number name name_es still_path backdrop} pageInfo{hasNextPage}}}');
+      const o = d && d.paginationEpisode;
+      if (!o || !o.items) break;
+      for (const e of o.items) out.push({ n, e });
+      if (!(o.pageInfo && o.pageInfo.hasNextPage)) break;
+    }
+    return out;
+  };
+  const res = await Promise.allSettled([1, 2, 3, 4, 5, 6].map(season));
+  const list = [];
+  for (const r of res) {
+    if (r.status !== "fulfilled") continue;
+    for (const { n, e } of r.value) {
+      if (!e || !e._id) continue;
+      const num = Number(e.episode_number) || list.length + 1;
+      list.push({ season: n, number: num, ref: "df|e|" + e._id, title: stripTags(e.name_es || e.name) || tr("Episodio ", "Episode ") + num, poster: tmdbPoster(e.still_path || e.backdrop) });
+    }
+  }
+  log("df episodios: " + list.length);
+  return { series: { title }, episodes: list };
+}
+
+// Los enlaces "embedshortener" llevan el enlace real escondido en base64 (sin ejecutar nada).
+function dfUnwrap(u) {
+  try {
+    if (hostOf(u).indexOf("embedshortener") < 0) return u;
+    const tok = String(u).split("/").pop().split(".")[1];
+    const j = JSON.parse(atob(tok.replace(/-/g, "+").replace(/_/g, "/")));
+    const t = atob(String(j.link).replace(/-/g, "+").replace(/_/g, "/"));
+    return /^https?:\/\//i.test(t) ? t : u;
+  } catch (e) { return u; }
+}
+
+async function dfCandidates(spec) {
+  const p = spec.split("|");
+  const isMovie = p[0] === "m";
+  const field = isMovie ? "getMovieLinks" : "getEpisodeLinks";
+  const d = await dfQuery("{" + field + "(id:" + JSON.stringify(p[1]) + "){links_online{link server lang}}}");
+  const raw = (d && d[field] && d[field].links_online) || [];
+  const out = [];
+  for (const x of raw) {
+    const u = absUrl(dfUnwrap(String((x && x.link) || "")));
+    if (!u || hostOf(u).indexOf("primeload") >= 0) continue;
+    // Por lo visto en los registros: el idioma 38 es el latino y el 13109 el subtitulado.
+    const l = String((x && x.lang) == null ? "" : x.lang);
+    const lang = l === "38" ? 0 : l === "13109" ? 2 : 1;
+    out.push({ url: u, label: "DoramasFlix · " + (lang === 0 ? "Latino" : lang === 2 ? tr("Subtitulado", "Subbed") : hostOf(u)), referer: DF + "/", lang });
+  }
+  log("df servidores: " + out.map((x) => hostOf(x.url) + ":" + x.lang).join(","));
+  return out;
+}
+
+function dyCards(html) {
+  const byUrl = new Map();
+  const re = /<a[^>]+href=["'](https:\/\/www\.doramasyt\.com\/(dorama|pelicula)\/([a-z0-9-]+))["'][^>]*>([\s\S]*?)<\/a>/gi;
+  let m;
+  while ((m = re.exec(html))) {
+    const e = byUrl.get(m[1]) || { kind: m[2], title: "", alt: "", poster: undefined };
+    const h3 = /<h[1-6][^>]*>([\s\S]*?)<\/h[1-6]>/i.exec(m[4]);
+    const text = h3 ? stripTags(h3[1]) : "";
+    if (text && !e.title) e.title = text;
+    const img = /<img[^>]*>/i.exec(m[4]);
+    if (img) {
+      const ds = /data-src=["']([^"']+)["']/i.exec(img[0]);
+      const sr = /\ssrc=["']([^"']+)["']/i.exec(img[0]);
+      if (!e.poster) e.poster = ds ? ds[1] : (sr && !/\/img\//.test(sr[1]) ? sr[1] : undefined);
+      const alt = /alt=["']([^"']+)["']/i.exec(img[0]);
+      if (alt && !e.alt) e.alt = decodeEntities(alt[1]).replace(/^Ver\s+/i, "").replace(/\s+online.*$/i, "");
+    }
+    byUrl.set(m[1], e);
+  }
+  const items = [];
+  for (const [url, e] of byUrl) {
+    const it = mkItem("dy", e.kind === "pelicula" ? "movie" : "series", enc(url), e.title || e.alt, e.poster);
+    if (it) items.push(it);
+  }
+  return items;
+}
+
+async function dyPage(n) {
+  const html = await getText(DY + "/doramas" + (n > 1 ? "?p=" + n : ""), { Referer: DY + "/" });
+  return { items: dyCards(html), hasNext: html.indexOf("p=" + (n + 1)) !== -1 };
+}
+
+async function dySearch(q) {
+  return dyCards(await getText(DY + "/buscar?q=" + enc(q), { Referer: DY + "/" }));
+}
+
+async function dyEpisodes(url) {
+  const html = await getText(url, { Referer: DY + "/" });
+  const h1 = /<h1[^>]*>([\s\S]*?)<\/h1>/.exec(html);
+  const title = h1 ? stripTags(h1[1]).replace(/^Ver\s+/i, "").replace(/\s+(online|en español).*$/i, "") : url;
+  const eps = new Map();
+  const re = /href=["'](https:\/\/www\.doramasyt\.com\/ver\/[a-z0-9-]+-episodio-(\d+))["']/gi;
+  let m;
+  while ((m = re.exec(html))) {
+    if (eps.has(m[1])) continue;
+    eps.set(m[1], { season: 1, number: Number(m[2]), ref: "dy|e|" + enc(m[1]), title: tr("Episodio ", "Episode ") + m[2] });
+  }
+  log("dy episodios: " + eps.size);
+  return { series: { title }, episodes: Array.from(eps.values()).sort((a, b) => a.number - b.number) };
+}
+
+async function dyCandidates(url) {
+  // Una película de DoramasYT puede ser una ficha /dorama/ con un solo capítulo: se busca ese capítulo.
+  if (/\/dorama\//.test(url)) {
+    const e = await dyEpisodes(url);
+    if (!e.episodes.length) throw kino.error("unavailable", "sin capítulo", { userMessage: tr("Este título no trae servidores disponibles.", "This title has no servers available.") });
+    url = dec(e.episodes[0].ref.split("|")[2]);
+  }
+  const html = await getText(url, { Referer: DY + "/" });
+  const btns = [];
+  const re = /<button[^>]*data-player=["']([^"']+)["'][^>]*>([\s\S]*?)<\/button>/gi;
+  let m;
+  while ((m = re.exec(html))) btns.push({ token: m[1], name: stripTags(m[2]).toLowerCase() });
+  const lat = /-latino-/i.test(url);
+  const out = btns.filter((b) => b.name !== "mega").map((b) => ({
+    url: DY + "/reproductor?video=" + b.token + "&player=" + enc(b.name) + "&token=",
+    label: "DoramasYT · " + (lat ? "Latino" : tr("Subtitulado", "Subbed")) + " · " + b.name,
+    referer: url,
+    lang: lat ? 0 : 2,
+  }));
+  log("dy servidores: " + btns.map((b) => b.name).join(","));
+  return out;
+}
+
 // ---- Secciones ----------------------------------------------------------------------------------
 
 const SECTIONS = {
@@ -1193,9 +1365,10 @@ const SECTIONS = {
   turcas: { genre: "series", parts: [() => (n) => stPage(n)] },
   toons: { genre: "series", parts: [() => (n) => lcPage(n)] },
   anime: { genre: "series", parts: [() => (n) => pjPage("anime", n), () => (n) => hsPage("anime", n)] },
+  doramas: { genre: "series", parts: [() => (n) => dfPage(n), () => (n) => dyPage(n)] },
 };
 
-const SRC_PRIO = { pj: 0, hs: 1, po: 2, cu: 3, tp: 4, cc: 5, fc: 6, pp: 7, sf: 8, ph: 9, sm: 10, pf: 11, lc: 12, st: 13 };
+const SRC_PRIO = { pj: 0, hs: 1, po: 2, cu: 3, tp: 4, cc: 5, fc: 6, pp: 7, sf: 8, ph: 9, sm: 10, pf: 11, lc: 12, st: 13, df: 14, dy: 15 };
 
 function normTitle(t) {
   return String(t || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/\(\d{4}\)/g, "").replace(/[^a-z0-9]+/g, "");
@@ -1252,6 +1425,7 @@ export async function home() {
     { id: "row-anime", ref: "anime", title: tr("Anime", "Anime") },
     { id: "row-turcas", ref: "turcas", title: tr("Series turcas", "Turkish series") },
     { id: "row-toons", ref: "toons", title: tr("Caricaturas", "Cartoons") },
+    { id: "row-doramas", ref: "doramas", title: tr("Doramas", "Dramas") },
   ];
   const res = await Promise.allSettled(defs.map((d) => sectionPage(d.ref, 1)));
   const rows = [];
@@ -1296,6 +1470,7 @@ export async function categories() {
     { id: "anime", title: tr("Anime", "Anime") },
     { id: "turcas", title: tr("Series turcas", "Turkish series") },
     { id: "toons", title: tr("Caricaturas", "Cartoons") },
+    { id: "doramas", title: tr("Doramas", "Dramas") },
   ];
   const first = await Promise.allSettled(defs.map((d) => sectionPage(d.id, 1)));
   return defs.map((d, i) => {
@@ -1308,7 +1483,7 @@ export async function categories() {
 // Todas las búsquedas a la vez (sin unir): se usa en el buscador y para encontrar el mismo título en otras fuentes.
 const deadUntil = {};
 async function searchAll(qa, ms) {
-  const jobs = [["pj", pjSearch], ["hs", hsSearch], ["po", (q) => nxSearch("po", q)], ["cu", (q) => nxSearch("cu", q)], ["cc", ccSearch], ["sm", smSearch], ["sf", sfSearch], ["ph", phSearch], ["lc", lcSearch], ["st", stSearch], ["pp", ppSearch]]
+  const jobs = [["pj", pjSearch], ["hs", hsSearch], ["po", (q) => nxSearch("po", q)], ["cu", (q) => nxSearch("cu", q)], ["cc", ccSearch], ["sm", smSearch], ["sf", sfSearch], ["ph", phSearch], ["lc", lcSearch], ["st", stSearch], ["pp", ppSearch], ["df", dfSearch], ["dy", dySearch]]
     .filter(([n]) => !(deadUntil[n] > Date.now()));
   const res = await Promise.allSettled(jobs.map(([, f]) => withTimeout(f(qa), Math.min(ms || 9000, 7000))));
   const all = [];
@@ -1354,6 +1529,8 @@ async function episodesOne(raw) {
   if (src === "sf") return sfEpisodes(dec(p[2]));
   if (src === "lc") return lcEpisodes(dec(p[2]));
   if (src === "st") return stEpisodes(dec(p[2]));
+  if (src === "df") return dfEpisodes(p[2], dec(p[3] || ""));
+  if (src === "dy") return dyEpisodes(dec(p[2]));
   throw kino.error("not_found", "referencia desconocida");
 }
 
@@ -1439,6 +1616,8 @@ async function candidatesOf(src, spec) {
   if (src === "ph") return phCandidates(arg());
   if (src === "lc") return lcCandidates(arg());
   if (src === "st") return stCandidates(arg());
+  if (src === "df") return dfCandidates(spec);
+  if (src === "dy") return dyCandidates(arg());
   throw kino.error("not_found", "referencia desconocida");
 }
 
