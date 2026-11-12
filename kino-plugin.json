@@ -1,9 +1,9 @@
 {
   "id": "pelis-tv",
   "name": "Pelis TV",
-  "description": "Películas, series, anime, doramas y caricaturas en español desde muchas fuentes.",
+  "description": "Películas, series, anime, y caricaturas en español desde muchas fuentes.",
   "author": "Ghosti-vc",
-  "version": "0.7.0",
+  "version": "0.6.2",
   "apiVersion": 9,
   "entry": "plugin.js",
   "capabilities": [
@@ -30,11 +30,7 @@
     "www.lacartoons.com",
     "tbg.seriesturcastv.to",
     "seriesflixhd.lol",
-    "pelisflixhd.win",
-    "doramasflix.io",
-    "user-api.fluxcedene.net",
-    "www.doramasyt.com",
-    "doramasyt.com"
+    "pelisflixhd.win"
   ],
   "browser": true,
   "fetchHosts": "any",
