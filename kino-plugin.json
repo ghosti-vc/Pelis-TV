@@ -1,19 +1,29 @@
 {
   "id": "pelis-tv",
   "name": "Pelis TV",
-  "description": "Películas, series y anime en español desde varias fuentes (PelisJuanita, HackStore, FuegoCine y PelisFlix).",
+  "description": "Películas, series y anime en español desde varias fuentes (PelisJuanita, HackStore, PoseidonHD, Cuevana, PelisPlus, FuegoCine y PelisFlix).",
   "author": "Ghosti-vc",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "apiVersion": 9,
   "entry": "plugin.js",
-  "capabilities": ["home", "browse", "search", "episodes", "resolve"],
+  "capabilities": [
+    "home",
+    "browse",
+    "search",
+    "episodes",
+    "resolve"
+  ],
   "hosts": [
     "pelisjuanita.org",
     "www.pelisjuanita.org",
     "hackstore3.net",
     "www.fuegocine.com",
     "pelisflix200.store",
-    "image.tmdb.org"
+    "image.tmdb.org",
+    "www.poseidonhd2.co",
+    "player.poseidonhd2.co",
+    "wv3.cuevana3.eu",
+    "www.pelisplushd.la"
   ],
   "browser": true,
   "fetchHosts": "any",
