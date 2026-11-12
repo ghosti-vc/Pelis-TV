@@ -1,9 +1,9 @@
 {
   "id": "pelis-tv",
   "name": "Pelis TV",
-  "description": "Películas, series y anime en español desde varias fuentes (PelisJuanita, HackStore, PoseidonHD, Cuevana, PelisPlus, FuegoCine y PelisFlix).",
+  "description": "Películas, series, anime, series turcas y caricaturas en español desde muchas fuentes.",
   "author": "Ghosti-vc",
-  "version": "0.2.0",
+  "version": "0.4.0",
   "apiVersion": 9,
   "entry": "plugin.js",
   "capabilities": [
@@ -23,7 +23,13 @@
     "www.poseidonhd2.co",
     "player.poseidonhd2.co",
     "wv3.cuevana3.eu",
-    "www.pelisplushd.la"
+    "www.pelisplushd.la",
+    "tioplus.app",
+    "www.cinecalidad.am",
+    "www3.seriesmetro.net",
+    "www.lacartoons.com",
+    "tbg.seriesturcastv.to",
+    "seriesflixhd.lol"
   ],
   "browser": true,
   "fetchHosts": "any",
