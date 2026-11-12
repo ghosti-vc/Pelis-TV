@@ -812,15 +812,349 @@ async function ppCandidates(path) {
   return out;
 }
 
+// ---- TioPlus (tp), CineCalidad (cc, solo películas) y SeriesMetro (sm, series subtituladas) ----
+// ref: <fuente>|<m|s>|<ruta>   episodio: <fuente>|e|<ruta>
+const TP = "https://tioplus.app";
+const CC = "https://www.cinecalidad.am";
+const SM = "https://www3.seriesmetro.net";
+
+// Tarjetas: enlaces cuya ruta empieza por [pref]; título e imagen salen de lo que haya dentro del enlace.
+function linkCards(html, base, pref, src, kind) {
+  const out = [];
+  const seen = new Set();
+  const esc = pref.replace(/[.*+?^${}()|[\]\\\/]/g, "\\$&");
+  const re = new RegExp("<a[^>]+href=[\"'](?:" + base.replace(/[.*+?^${}()|[\]\\\/]/g, "\\$&") + ")?(" + esc + "[^\"'?#]+)[\"'][^>]*>([\\s\\S]*?)<\\/a>", "gi");
+  let m;
+  while ((m = re.exec(html))) {
+    const path = m[1].replace(/\/+$/, "");
+    if (seen.has(path)) continue;
+    const inner = m[2];
+    const im = /<img[^>]*(?:data-src|data-lazy-src|src)=["']([^"']+)["']/i.exec(inner);
+    const t = /<img[^>]*alt=["']([^"']+)["']/i.exec(inner) || /<h\d[^>]*>([\s\S]*?)<\/h\d>/i.exec(inner) || /title=["']([^"']+)["']/i.exec(m[0]);
+    seen.add(path);
+    let poster = im ? im[1] : "";
+    if (poster.charAt(0) === "/" && poster.charAt(1) !== "/") poster = base + poster;
+    const it = mkItem(src, kind, enc(path), t ? t[1] : humanSlug(path.split("/").pop()), absUrl(poster), "");
+    if (it) out.push(it);
+  }
+  return out;
+}
+
+async function tpSearch(q) {
+  const html = await getText(TP + "/search/" + enc(q), { Referer: TP + "/" });
+  if (/No hay resultados/i.test(html)) return [];
+  return linkCards(html, TP, "/pelicula/", "tp", "movie").concat(linkCards(html, TP, "/serie/", "tp", "series")).filter((x) => x.ref.split("|").length === 3 && x.ref.split("|")[2].split("%2F").length <= 3);
+}
+
+async function tpEpisodes(path) {
+  const html = await getText(TP + path, { Referer: TP + "/" });
+  const slug = path.split("/").pop();
+  const h1 = /<h1[^>]*>([\s\S]*?)<\/h1>/i.exec(html);
+  const out = [];
+  const seen = new Set();
+  const re = new RegExp("/serie/" + slug.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + "/season/(\\d+)/episode/(\\d+)", "gi");
+  let m;
+  while ((m = re.exec(html))) {
+    const k = m[1] + "x" + m[2];
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push({ season: Number(m[1]), number: Number(m[2]), ref: "tp|e|" + enc(path + "/season/" + m[1] + "/episode/" + m[2]), title: m[1] + "x" + m[2] });
+  }
+  log("TioPlus episodios: " + out.length);
+  return { series: { title: h1 ? stripTags(h1[1]) : humanSlug(slug) }, episodes: out };
+}
+
+async function tpCandidates(path) {
+  const url = TP + path;
+  const html = await getText(url, { Referer: TP + "/" });
+  const items = [];
+  const re = /<li[^>]*data-server=['"]([^'"]+)['"][^>]*>([\s\S]*?)<\/li>/gi;
+  let m;
+  while ((m = re.exec(html)) && items.length < 6) items.push({ tok: m[1], label: stripTags(m[2]).replace(/Reproducir/gi, "").trim() });
+  const res = await Promise.allSettled(items.map(async (it) => {
+    const t = await getText(TP + "/player/" + btoa(it.tok), { Referer: url });
+    const d = /window\.location(?:\.href)?\s*=\s*['"]([^'"]+)['"]/i.exec(t) || /<iframe[^>]+src=['"]([^'"]+)['"]/i.exec(t);
+    const u = d ? absUrl(decodeEntities(d[1])) : "";
+    return u ? { url: u, label: "TioPlus · " + (it.label || hostOf(u)), referer: TP + "/", lang: 0 } : null;
+  }));
+  const out = res.filter((r) => r.status === "fulfilled" && r.value).map((r) => r.value);
+  log("TioPlus servidores: " + out.map((x) => hostOf(x.url)).join(","));
+  return out;
+}
+
+async function ccSearch(q) {
+  const html = await getText(CC + "/?s=" + enc(q), { Referer: CC + "/" });
+  return linkCards(html, CC, "/ver-pelicula/", "cc", "movie");
+}
+
+async function ccCandidates(path) {
+  const html = await getText(CC + path, { Referer: CC + "/" });
+  const out = [];
+  const re = /<li[^>]+class=["'][^"']*dooplay_player_option[^"']*["'][^>]*data-option=["']([^"']+)["']/gi;
+  let m;
+  while ((m = re.exec(html))) {
+    const u = absUrl(decodeEntities(m[1]));
+    if (u && !/youtube|trailer/i.test(u)) out.push({ url: u, label: "CineCalidad · Latino", referer: CC + "/", lang: 0 });
+  }
+  log("CineCalidad servidores: " + out.map((x) => hostOf(x.url)).join(","));
+  return out;
+}
+
+async function smSearch(q) {
+  const html = await getText(SM + "/?s=" + enc(q), { Referer: SM + "/" });
+  return linkCards(html, SM, "/serie/", "sm", "series");
+}
+
+async function smEpisodes(path) {
+  const html = await getText(SM + path, { Referer: SM + "/" });
+  const slug = path.split("/").pop();
+  const h1 = /<h1[^>]*>([\s\S]*?)<\/h1>/i.exec(html);
+  const out = [];
+  const seen = new Set();
+  const re = /href=["'](?:https?:\/\/www3\.seriesmetro\.net)?(\/capitulo\/[^"']*?-temporada-(\d+)-capitulo-(\d+))\/?["']/gi;
+  let m;
+  while ((m = re.exec(html))) {
+    const k = m[2] + "x" + m[3];
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push({ season: Number(m[2]), number: Number(m[3]), ref: "sm|e|" + enc(m[1] + "/"), title: k });
+  }
+  log("SeriesMetro episodios: " + out.length);
+  return { series: { title: h1 ? stripTags(h1[1]) : humanSlug(slug) }, episodes: out };
+}
+
+async function smCandidates(path) {
+  const html = await getText(SM + path, { Referer: SM + "/" });
+  const urls = [];
+  const re = /src=["'](https?:\/\/www3\.seriesmetro\.net\/\?trembed=\d+[^"']+)["']/gi;
+  let m;
+  while ((m = re.exec(html)) && urls.length < 5) { const u = decodeEntities(m[1]); if (urls.indexOf(u) < 0) urls.push(u); }
+  const res = await Promise.allSettled(urls.map(async (u) => {
+    const t = await getText(u, { Referer: SM + "/" });
+    const out = [];
+    const fr = /<iframe[^>]+src=["']([^"']+)["']/gi;
+    let f;
+    while ((f = fr.exec(t))) { const x = absUrl(decodeEntities(f[1])); if (x && !/cloudflare|google|facebook/i.test(x)) out.push({ url: x, label: tr("Subtitulado", "Subbed") + " · " + hostOf(x), referer: SM + "/", lang: 2 }); }
+    return out;
+  }));
+  const out = [];
+  res.forEach((r) => { if (r.status === "fulfilled") out.push.apply(out, r.value); });
+  log("SeriesMetro servidores: " + out.map((x) => hostOf(x.url)).join(","));
+  return out;
+}
+
+// ---- LaCartoons (lc), SeriesTurcas (st) y SeriesFlix (sf) ----
+const LC = "https://www.lacartoons.com";
+const ST = "https://tbg.seriesturcastv.to";
+const SF = "https://seriesflixhd.lol";
+
+const absTo = (base, u) => { u = decodeEntities(u); return u.charAt(0) === "/" && u.charAt(1) !== "/" ? base + u : absUrl(u) || u; };
+
+// LaCartoons: caricaturas en Latino. ref: lc|s|/serie/<id>   episodio: lc|e|<ruta con ?t=temporada>
+function lcCards(html) {
+  const out = [];
+  const seen = new Set();
+  const re = /<a\s+href="(\/serie\/\d+)"[^>]*>([\s\S]*?)<\/a>/gi;
+  let m;
+  while ((m = re.exec(html))) {
+    const nm = /<p\s+class="nombre-serie"[^>]*>([\s\S]*?)<\/p>/i.exec(m[2]);
+    if (!nm || seen.has(m[1])) continue;
+    seen.add(m[1]);
+    const im = /<img[^>]+src="([^"]+)/i.exec(m[2]);
+    const it = mkItem("lc", "series", enc(m[1]), nm[1], im ? absUrl(absTo(LC, im[1])) : "", "");
+    if (it) out.push(it);
+  }
+  return out;
+}
+
+async function lcPage(n) {
+  const html = await getText(LC + (n > 1 ? "/?page=" + n : "/"), { Referer: LC + "/" });
+  return { items: lcCards(html), hasNext: html.indexOf("/?page=" + (n + 1)) >= 0 };
+}
+
+async function lcSearch(q) {
+  return lcCards(await getText(LC + "/?Titulo=" + enc(q), { Referer: LC + "/" }));
+}
+
+async function lcEpisodes(path) {
+  const html = await getText(LC + path, { Referer: LC + "/" });
+  const h1 = /<h2[^>]*>([\s\S]*?)<\/h2>|<h1[^>]*>([\s\S]*?)<\/h1>/i.exec(html);
+  const out = [];
+  const seen = new Set();
+  const re = /<a[^>]+href="([^"]*serie\/capitulo\/[^"]*)"[^>]*>([\s\S]*?)<\/a>/gi;
+  let m;
+  while ((m = re.exec(html))) {
+    const href = decodeEntities(m[1]);
+    const label = stripTags(m[2]);
+    const num = /(?:cap[ií]tulo|eps?)\s*(\d+)/i.exec(label);
+    const t = /[?&]t=(\d+)/.exec(href);
+    if (!num) continue;
+    const season = t ? Number(t[1]) : 1;
+    const k = season + "x" + num[1];
+    if (seen.has(k)) continue;
+    seen.add(k);
+    const p = href.replace(/^https?:\/\/[^\/]+/, "");
+    out.push({ season, number: Number(num[1]), ref: "lc|e|" + enc(p), title: label.replace(/^cap[ií]tulo\s*\d+\s*[-–]?\s*/i, "") || tr("Capítulo ", "Episode ") + num[1] });
+  }
+  log("LaCartoons episodios: " + out.length);
+  return { series: { title: h1 ? stripTags(h1[1] || h1[2]) : "" }, episodes: out };
+}
+
+async function lcCandidates(path) {
+  const html = await getText(LC + path, { Referer: LC + "/" });
+  const out = [];
+  const re = /<iframe[^>]+src="([^"]+)"/gi;
+  let m;
+  while ((m = re.exec(html))) {
+    const u = absUrl(decodeEntities(m[1]));
+    if (u && /ok\.ru|vk\.com|vkvideo|rpmvid|video_ext\.php/i.test(u)) out.push({ url: u, label: "LaCartoons · Latino", referer: LC + "/", lang: 0 });
+  }
+  log("LaCartoons servidores: " + out.map((x) => hostOf(x.url)).join(","));
+  return out;
+}
+
+// SeriesTurcas: ref st|s|<url de la serie>   episodio st|e|<url>
+let stList = null;
+function stCards(html) {
+  const out = [];
+  const seen = new Set();
+  const re = /<a\s+href="([^"]+)"\s+title="([^"]+)"\s+class="poster"[^>]*>([\s\S]*?)<\/a>/gi;
+  let m;
+  while ((m = re.exec(html))) {
+    if (!/seriesturcastv\.to/i.test(hostOf(m[1])) || seen.has(m[1])) continue;
+    seen.add(m[1]);
+    const im = /<img\s+src="([^"]+)/i.exec(m[3]);
+    const it = mkItem("st", "series", enc(m[1].replace(/^https?:\/\/[^\/]+/, "")), m[2], im ? absUrl(absTo(ST, im[1])) : "", "");
+    if (it) out.push(it);
+  }
+  return out;
+}
+
+async function stPage(n) {
+  if (!stList) stList = stCards(await getText(ST + "/series/", { Referer: ST + "/" }));
+  const start = (n - 1) * 30;
+  return { items: stList.slice(start, start + 30), hasNext: start + 30 < stList.length };
+}
+
+async function stSearch(q) {
+  return stCards(await getText(ST + "/?s=" + enc(q), { Referer: ST + "/" }));
+}
+
+async function stEpisodes(path) {
+  const html = await getText(ST + path, { Referer: ST + "/" });
+  const h1 = /<h1[^>]*>([\s\S]*?)<\/h1>/i.exec(html);
+  const out = [];
+  const seen = new Set();
+  const re = /<a\s+class=["']episod["']\s+href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
+  let m;
+  while ((m = re.exec(html))) {
+    if (!/seriesturcastv\.to/i.test(hostOf(m[1]))) continue;
+    const label = stripTags(m[2]);
+    const num = /cap[ií]tulo\s*(\d+)/i.exec(label);
+    if (!num || seen.has(num[1])) continue;
+    seen.add(num[1]);
+    out.push({ season: 1, number: Number(num[1]), ref: "st|e|" + enc(m[1].replace(/^https?:\/\/[^\/]+/, "")), title: label });
+  }
+  log("SeriesTurcas episodios: " + out.length);
+  return { series: { title: h1 ? stripTags(h1[1]) : "" }, episodes: out };
+}
+
+// Los enlaces de las pestañas vienen escondidos: base64 -> al revés -> -5 -> XOR con una clave fija.
+function stDecode(ds) {
+  try {
+    const raw = atob(ds.replace(/\|/g, ""));
+    const rev = raw.split("").reverse().join("");
+    const key = [86, 110, 51, 72, 106, 87, 56, 102];
+    let out = "";
+    for (let i = 0; i < rev.length; i++) out += String.fromCharCode(((rev.charCodeAt(i) - 5 + 256) % 256) ^ key[i % key.length]);
+    const m = /src=["']([^"']+)["']/i.exec(out);
+    if (m) return m[1];
+    return /^https?:/i.test(out) ? out : "";
+  } catch (e) { return ""; }
+}
+
+async function stCandidates(path) {
+  const html = await getText(ST + path, { Referer: ST + "/" });
+  const urls = [];
+  const add = (u) => { u = absUrl(decodeEntities(u || "")); if (u && urls.indexOf(u) < 0 && !/netusia/i.test(u)) urls.push(u); };
+  const fr = /<div[^>]+id=["']tab\d+["'][^>]*>[\s\S]*?<iframe[^>]+src=["']([^"']+)["']/gi;
+  let m;
+  while ((m = fr.exec(html))) add(m[1]);
+  const dr = /data-s\d*=["']([^"']+)["']/gi;
+  while ((m = dr.exec(html))) add(stDecode(m[1]));
+  const out = urls.map((u) => ({ url: u, label: "SeriesTurcas · " + tr("Subtitulado", "Subbed"), referer: ST + "/", lang: 2 }));
+  log("SeriesTurcas servidores: " + out.map((x) => hostOf(x.url)).join(","));
+  return out;
+}
+
+// SeriesFlix: series. ref sf|s|/serie/<slug>   episodio sf|e|/episodio/<slug>-SxE/
+async function sfSearch(q) {
+  const html = await getText(SF + "/?s=" + enc(q), { Referer: SF + "/" });
+  const out = [];
+  const seen = new Set();
+  const re = /<article[^>]*class=["'][^"']*TPost[^"']*["'][\s\S]*?<\/article>/gi;
+  let m;
+  while ((m = re.exec(html))) {
+    const h = /href=["'](?:https?:\/\/[^\/]+)?(\/serie\/[^\/"']+)\/?["']/i.exec(m[0]);
+    if (!h || seen.has(h[1])) continue;
+    seen.add(h[1]);
+    const t = /<h2[^>]*>([\s\S]*?)<\/h2>/i.exec(m[0]) || /alt=["']([^"']+)["']/i.exec(m[0]);
+    const im = /<img[^>]*(?:data-src|src)=["']([^"']+)["']/i.exec(m[0]);
+    const it = mkItem("sf", "series", enc(h[1]), t ? t[1] : humanSlug(h[1].split("/").pop()), im ? absUrl(absTo("https:", im[1])) : "", "");
+    if (it) out.push(it);
+  }
+  return out;
+}
+
+async function sfEpisodes(path) {
+  const html = await getText(SF + path, { Referer: SF + "/" });
+  const slug = path.split("/").pop();
+  const h1 = /<h1[^>]*>([\s\S]*?)<\/h1>/i.exec(html);
+  const out = [];
+  const seen = new Set();
+  const re = new RegExp("/episodio/(" + slug.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") + ")-(\\d+)x(\\d+)/?", "gi");
+  let m;
+  while ((m = re.exec(html))) {
+    const k = m[2] + "x" + m[3];
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push({ season: Number(m[2]), number: Number(m[3]), ref: "sf|e|" + enc("/episodio/" + m[1] + "-" + k + "/"), title: k });
+  }
+  log("SeriesFlix episodios: " + out.length);
+  return { series: { title: h1 ? stripTags(h1[1]) : humanSlug(slug) }, episodes: out };
+}
+
+async function sfCandidates(path) {
+  const html = await getText(SF + path, { Referer: SF + "/" });
+  const out = [];
+  const re = /<div[^>]*data-url=["']([^"']+)["'][^>]*class=["'][^"']*Button\s+sgty[^"']*["'][^>]*>([\s\S]*?)<\/div>/gi;
+  let m;
+  while ((m = re.exec(html))) {
+    try {
+      let d = atob(m[1]);
+      if (/iframe\/\?url=|watch\//.test(d)) { const q = /[?&]url=([^&]+)/i.exec(d); if (q) d = dec(q[1]); }
+      const u = absUrl(d);
+      if (!u) continue;
+      const lab = stripTags(m[2]).toUpperCase();
+      const lang = /CASTELLANO|ESP/.test(lab) ? 1 : /SUB/.test(lab) ? 2 : 0;
+      out.push({ url: u, label: "SeriesFlix · " + (lang === 0 ? "Latino" : lang === 1 ? "Castellano" : tr("Subtitulado", "Subbed")), referer: SF + "/", lang });
+    } catch (e) { /* no era base64 */ }
+  }
+  log("SeriesFlix servidores: " + out.map((x) => hostOf(x.url)).join(","));
+  return out;
+}
+
 // ---- Secciones ----------------------------------------------------------------------------------
 
 const SECTIONS = {
   peliculas: { genre: "peliculas", parts: [() => (n) => pjPage("movie", n), () => (n) => hsPage("movie", n), () => (n) => fcPage("Movie", n), () => (n) => pfPage("movie", n)] },
   series: { genre: "series", parts: [() => (n) => pjPage("series", n), () => (n) => hsPage("series", n), () => (n) => fcPage("Serie", n), () => (n) => pfPage("series", n)] },
+  turcas: { genre: "series", parts: [() => (n) => stPage(n)] },
+  toons: { genre: "series", parts: [() => (n) => lcPage(n)] },
   anime: { genre: "series", parts: [() => (n) => pjPage("anime", n), () => (n) => hsPage("anime", n), () => (n) => fcPage("Anime", n)] },
 };
 
-const SRC_PRIO = { pj: 0, hs: 1, po: 2, cu: 3, fc: 4, pp: 5, pf: 6 };
+const SRC_PRIO = { pj: 0, hs: 1, po: 2, cu: 3, tp: 4, cc: 5, fc: 6, pp: 7, sf: 8, sm: 9, pf: 10, lc: 11, st: 12 };
 
 function normTitle(t) {
   return String(t || "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/\(\d{4}\)/g, "").replace(/[^a-z0-9]+/g, "");
@@ -870,6 +1204,8 @@ export async function home() {
     { id: "row-peliculas", ref: "peliculas", title: tr("Películas", "Movies") },
     { id: "row-series", ref: "series", title: tr("Series", "Series") },
     { id: "row-anime", ref: "anime", title: tr("Anime", "Anime") },
+    { id: "row-turcas", ref: "turcas", title: tr("Series turcas", "Turkish series") },
+    { id: "row-toons", ref: "toons", title: tr("Caricaturas", "Cartoons") },
   ];
   const res = await Promise.allSettled(defs.map((d) => sectionPage(d.ref, 1)));
   const rows = [];
@@ -912,6 +1248,8 @@ export async function categories() {
     { id: "peliculas", title: tr("Películas", "Movies") },
     { id: "series", title: tr("Series", "Series") },
     { id: "anime", title: tr("Anime", "Anime") },
+    { id: "turcas", title: tr("Series turcas", "Turkish series") },
+    { id: "toons", title: tr("Caricaturas", "Cartoons") },
   ];
   const first = await Promise.allSettled(defs.map((d) => sectionPage(d.id, 1)));
   return defs.map((d, i) => {
@@ -926,7 +1264,7 @@ export async function search(query) {
   const q = stripTags(query && query.q).slice(0, 100);
   if (!q) return [];
   const qa = q.normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[¡!¿?:,.]/g, " ").replace(/\s+/g, " ").trim() || q;
-  const tasks = [pjSearch(qa), hsSearch(qa), nxSearch("po", qa), nxSearch("cu", qa), ppSearch(qa), fcSearch(qa), pfSearch(qa)];
+  const tasks = [pjSearch(qa), hsSearch(qa), nxSearch("po", qa), nxSearch("cu", qa), tpSearch(qa), ccSearch(qa), smSearch(qa), sfSearch(qa), lcSearch(qa), stSearch(qa), ppSearch(qa), fcSearch(qa), pfSearch(qa)];
   const res = await Promise.allSettled(tasks);
   const all = [];
   res.forEach((r, i) => {
@@ -950,6 +1288,11 @@ async function episodesOne(raw) {
   if (src === "fc") return fcEpisodes(dec(p[2]));
   if (src === "pf") return pfEpisodes(dec(p[2]));
   if (src === "po" || src === "cu") return nxEpisodes(src, dec(p[2]));
+  if (src === "tp") return tpEpisodes(dec(p[2]));
+  if (src === "sm") return smEpisodes(dec(p[2]));
+  if (src === "sf") return sfEpisodes(dec(p[2]));
+  if (src === "lc") return lcEpisodes(dec(p[2]));
+  if (src === "st") return stEpisodes(dec(p[2]));
   throw kino.error("not_found", "referencia desconocida");
 }
 
@@ -1001,6 +1344,12 @@ async function candidatesOf(src, spec) {
   if (src === "pf") return pfCandidates(dec(spec.split("|")[1] === undefined ? spec : spec.split("|")[1]));
   if (src === "po" || src === "cu") return nxCandidates(src, dec(spec.split("|")[1]), spec.charAt(0) === "e");
   if (src === "pp") return ppCandidates(dec(spec.split("|")[1]));
+  if (src === "tp") return tpCandidates(dec(spec.split("|")[1]));
+  if (src === "cc") return ccCandidates(dec(spec.split("|")[1]));
+  if (src === "sm") return smCandidates(dec(spec.split("|")[1]));
+  if (src === "sf") return sfCandidates(dec(spec.split("|")[1]));
+  if (src === "lc") return lcCandidates(dec(spec.split("|")[1]));
+  if (src === "st") return stCandidates(dec(spec.split("|")[1]));
   throw kino.error("not_found", "referencia desconocida");
 }
 
