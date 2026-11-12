@@ -3,7 +3,7 @@
   "name": "Pelis TV",
   "description": "Películas, series, anime, series turcas y caricaturas en español desde muchas fuentes.",
   "author": "Ghosti-vc",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "apiVersion": 9,
   "entry": "plugin.js",
   "capabilities": [
