@@ -9,6 +9,15 @@ const FC = "https://www.fuegocine.com";
 const PF = "https://pelisflix200.store";
 const REF = PJ + "/";
 const HOME_ROW = 20;
+const UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36";
+
+// Cabeceras con las que el reproductor pide el video: muchos servidores responden 403 si falta el origen o el navegador.
+function playHeaders(pageUrl) {
+  const m = /^(https?:\/\/[^\/?#]+)/i.exec(String(pageUrl || ""));
+  const h = { Referer: pageUrl, "User-Agent": UA };
+  if (m) h.Origin = m[1];
+  return h;
+}
 const PAGE_VIEW = 40;
 const MAX_RESULTS = 100;
 
@@ -256,7 +265,7 @@ async function embedFromHtml(embedUrl, depth, referer) {
   diag(html, d, !!u);
   if (u) {
     log("embed[" + d + "] video elegido: " + hostOf(u) + pathShape(u));
-    return { url: u, mime: /\.m3u8/i.test(u) ? "application/x-mpegurl" : "video/mp4", headers: { Referer: embedUrl } };
+    return { url: u, mime: /\.m3u8/i.test(u) ? "application/x-mpegurl" : "video/mp4", headers: playHeaders(embedUrl) };
   }
   if (d >= 2) return null;
   const links = embedLinks(html, embedUrl).filter((l) => !/byse/i.test(hostOf(l))).slice(0, d === 0 ? 3 : 2);
@@ -1299,7 +1308,7 @@ export async function categories() {
 // Todas las búsquedas a la vez (sin unir): se usa en el buscador y para encontrar el mismo título en otras fuentes.
 const deadUntil = {};
 async function searchAll(qa, ms) {
-  const jobs = [["pj", pjSearch], ["hs", hsSearch], ["po", (q) => nxSearch("po", q)], ["cu", (q) => nxSearch("cu", q)], ["tp", tpSearch], ["cc", ccSearch], ["sm", smSearch], ["sf", sfSearch], ["ph", phSearch], ["lc", lcSearch], ["st", stSearch], ["pp", ppSearch]]
+  const jobs = [["pj", pjSearch], ["hs", hsSearch], ["po", (q) => nxSearch("po", q)], ["cu", (q) => nxSearch("cu", q)], ["cc", ccSearch], ["sm", smSearch], ["sf", sfSearch], ["ph", phSearch], ["lc", lcSearch], ["st", stSearch], ["pp", ppSearch]]
     .filter(([n]) => !(deadUntil[n] > Date.now()));
   const res = await Promise.allSettled(jobs.map(([, f]) => withTimeout(f(qa), Math.min(ms || 9000, 7000))));
   const all = [];
@@ -1440,7 +1449,7 @@ async function sleepUpTo(ms) {
 }
 
 const isDirect = (c) => /\.(m3u8|mp4)(\?|$)/i.test(c.url) && !isDemo(c.url);
-const asDirect = (c) => ({ url: c.url, mime: /\.m3u8/i.test(c.url) ? "application/x-mpegurl" : "video/mp4", label: c.label, headers: { Referer: c.referer || REF } });
+const asDirect = (c) => ({ url: c.url, mime: /\.m3u8/i.test(c.url) ? "application/x-mpegurl" : "video/mp4", label: c.label, headers: playHeaders(c.referer || REF) });
 
 // Un video HLS solo vale si su lista de reproducción abre de verdad (hay servidores que entregan enlaces que luego fallan).
 async function verifyMedia(m) {
@@ -1461,7 +1470,7 @@ export async function resolve(ref) {
   const raw = String(ref || "");
   const refs = (raw.startsWith("mx|") ? raw.slice(3) : raw).split("||").filter((x) => x && x.indexOf("tt:") !== 0).slice(0, 8);
   if (!refs.length) throw kino.error("not_found", "referencia desconocida");
-  const total = 19000;
+  const total = 17000;
   const left = () => total - (Date.now() - t0);
 
   // 1) servidores de todas las fuentes, a la vez
@@ -1473,6 +1482,10 @@ export async function resolve(ref) {
     else { lastErr = g.reason; log("resolve: " + refs[i].slice(0, 2) + " sin servidores (" + String((g.reason && g.reason.message) || g.reason).slice(0, 40) + ")"); }
   });
   cands = cands.filter((c, i) => cands.findIndex((x) => x.url === c.url) === i);
+  // Servidores que piden verificación humana o que nunca entregaron video: solo si no hay otros.
+  const useless = (c) => /dood|mixdrop|susanexpect|nupload|netu|waaw|hqq/i.test(hostOf(c.url));
+  const usable = cands.filter((c) => !useless(c));
+  if (usable.length) cands = usable;
   cands.sort((a, b) => ((a.lang || 0) * 10 + rank(a.url)) - ((b.lang || 0) * 10 + rank(b.url)));
   log("resolve: " + cands.length + " servidores de " + refs.length + " fuentes");
 
@@ -1484,7 +1497,7 @@ export async function resolve(ref) {
   // 3) reproductores: se van abriendo de 4 en 4 sin soltar los anteriores; gana el primero que entregue un video
   //    que de verdad abra. Si a los 4,5 s nadie ha entregado nada, el navegador oculto arranca en paralelo.
   const embeds = cands.filter((c) => !isDirect(c));
-  const BAD = /dood|mixdrop|susanexpect|waaw|hqq|netu/i;
+  const BAD = /dood|mixdrop|susanexpect|waaw|hqq|netu|nupload/i;
   const browserOk = typeof kino.browser === "object" && kino.browser && typeof kino.browser.capture === "function";
   let winner = null;
   let fallback = null;
@@ -1495,7 +1508,7 @@ export async function resolve(ref) {
     v.label = c.label;
     const l = c.lang || 0;
     if (await verifyMedia(v)) { if (!winner || l < winner.l) winner = { v, l }; }
-    else { log("resolve: el video de " + hostOf(c.url) + " no abre, se descarta"); if (!fallback) fallback = v; }
+    else { log("resolve: el video de " + hostOf(c.url) + " no abre, se descarta"); if (!fallback && !BAD.test(hostOf(c.url))) fallback = v; }
   };
   const start = (c) => {
     pending++;
@@ -1525,7 +1538,7 @@ export async function resolve(ref) {
   };
   for (let i = 0; i < embeds.length && left() > 4500 && !winner; i += 4) {
     embeds.slice(i, i + 4).forEach(start);
-    await waitFor(Math.min(4500, left() - 3500));
+    await waitFor(Math.min(3000, left() - 3500));
     if (!winner) startCapture();
   }
   if (!winner) startCapture();
