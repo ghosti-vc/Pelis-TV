@@ -244,6 +244,13 @@ function okruMedia(html) {
 
 async function embedFromHtml(embedUrl, depth, referer) {
   const d = depth || 0;
+  if (isHoster(embedUrl)) {
+    try {
+      const hm = await hosterMedia(embedUrl);
+      if (hm) { log("hoster directo: " + hostOf(embedUrl) + " -> " + hostOf(hm.url)); return hm; }
+      log("hoster " + hostOf(embedUrl) + ": sin video directo, sigo con el método normal");
+    } catch (e) { log("hoster " + hostOf(embedUrl) + " falló: " + String((e && e.message) || e).slice(0, 60)); }
+  }
   const r = await kino.fetch(embedUrl, { headers: { Referer: referer || REF } });
   log("embed[" + d + "] " + hostOf(embedUrl) + pathShape(embedUrl) + " status=" + r.status);
   if (!r.ok) return null;
@@ -290,6 +297,177 @@ async function captureEmbed(embedUrl, ms) {
   if (first.headers && typeof first.headers === "object") out.headers = first.headers;
   return out;
 }
+
+
+// ---- Extractores directos por servidor (tomados de Kino Resolver) --------------------------------
+// Para los servidores más comunes se saca el video leyendo la página (o la API del servidor), sin
+// abrir el navegador. Si no logran nada, se sigue con el método de siempre.
+
+const H_VOE = /voe\.sx|voe-unblock|voeunbl|voeun|edwardarriveoften|yodelswartlike|nathanfromsubject|reputationsheriff|fittingcentermondaysunday|tinycat-voe-fashion|scatch176duplicities|arianathankspecial|cloudwindow-route/i;
+const H_WISH = /stream.?wish|strwish|embedwish|wishembed|awish|dwish|mwish|wishfast|sfastwish|flaswish|obeywish|cdnwish|asnwish|flastwish|jodwish|swhoi|swdyu|wishonly|playerwish|hlswish|iplayerhls|hlsflast|ghbrisk|cybervynx|streamhg|hlsflex|hglink|hgplaycdn|vibuxer|yuguaab/i;
+const H_TAPE = /streamtape|strtape|strcloud|stape|tapewithadblock|streamadblock|watchadsontape|shavetape|strtpe/i;
+const H_HIDE = /streamhide|playhide|guccihide|moviesm4u|louishide|ahvsh|movhide/i;
+const H_LARE = /streamlare|slmaxed|slwatch|sltube|streamlure/i;
+const H_VIMEOS = /\bvimeos\.(net|zip|to|sx|cc|xyz|lol|art|fun)\b/i;
+
+const hx = (re, s, i) => { const m = re.exec(String(s || "")); return m ? m[i === undefined ? 1 : i] : ""; };
+const rot13 = (s) => s.replace(/[a-zA-Z]/g, (c) => { const b = c <= "Z" ? 65 : 97; return String.fromCharCode(b + ((c.charCodeAt(0) - b + 13) % 26)); });
+const b64 = (s) => { try { return atob(String(s).replace(/[^A-Za-z0-9+\/=_-]/g, "").replace(/-/g, "+").replace(/_/g, "/")); } catch (e) { return ""; } };
+
+function voeDecode(html) {
+  try {
+    const raw = hx(/<script type="application\/json">(\[".*?"\])<\/script>/s, html);
+    if (!raw) return null;
+    let s = rot13(JSON.parse(raw)[0]);
+    for (const j of ["@$", "^^", "~@", "%?", "*~", "!!", "#&"]) s = s.split(j).join("");
+    const d1 = b64(s);
+    let sh = "";
+    for (let i = 0; i < d1.length; i++) sh += String.fromCharCode((d1.charCodeAt(i) - 3 + 256) % 256);
+    return JSON.parse(b64(sh.split("").reverse().join("")));
+  } catch (e) { return null; }
+}
+
+function packedOf(html) {
+  const outs = [];
+  let i = 0;
+  while (outs.length < 4) {
+    const k = html.indexOf("eval(function(p,a,c,k,e", i);
+    if (k < 0) break;
+    const u = unpackPacked(html.slice(k, k + 80000));
+    if (u) outs.push(u);
+    i = k + 20;
+  }
+  return outs;
+}
+const fileOfPacked = (html) => {
+  for (const t of packedOf(html)) {
+    const f = hx(/(?:file|"hls\d?")\s*:\s*"([^"]+\.(?:m3u8|mp4)[^"]*)"/i, t) || hx(/(?:file|"hls\d?")\s*:\s*"(https?:[^"]+)"/i, t) || hx(/sources\s*:\s*\[\s*\{\s*file\s*:\s*"([^"]+)"/i, t) || hx(/src\s*:\s*"(https?:[^"]+)"/i, t);
+    if (f) return f;
+  }
+  return "";
+};
+const fixU = (u) => String(u || "").replace(/\\\//g, "/").replace(/&amp;/g, "&");
+const okU = (u) => /^https?:\/\//i.test(u || "") && !isDemo(u);
+
+// Devuelve { url, mime, headers } o null.
+async function hosterMedia(url) {
+  const h = hostOf(url);
+  const page = async (u, hdr) => {
+    const r = await kino.fetch(u, { headers: hdr || { Referer: REF } });
+    if (!r.ok) { log("hoster " + hostOf(u) + " status=" + r.status); return ""; }
+    return await r.text();
+  };
+  const out = (u, referer, extra) => {
+    u = fixU(u);
+    if (!okU(u)) return null;
+    const hd = referer ? playHeaders(referer) : undefined;
+    const o = { url: u, mime: /\.m3u8/i.test(u) ? "application/x-mpegurl" : "video/mp4" };
+    if (hd || extra) o.headers = Object.assign({}, hd || {}, extra || {});
+    return o;
+  };
+  let html, u;
+
+  if (H_VOE.test(h)) {
+    const id = hx(/voe\.sx\/(?:e\/)?([A-Za-z0-9]+)/i, url);
+    const first = id ? "https://voe.sx/e/" + id : url;
+    html = await page(first, { Referer: REF });
+    if (/permanentToken|Redirecting/.test(html)) {
+      const r = hx(/window\.location\.href\s*=\s*'(https?:\/\/[^']+)'/, html);
+      if (r) html = await page(r, { Referer: "https://voe.sx/" });
+    }
+    if (/File not found|no longer available|Error 404/i.test(html)) return null;
+    const d = voeDecode(html);
+    if (d) { u = d.source || d.direct_access_url; if (u) return out(u, "https://voe.sx/"); }
+    u = hx(/(?:mp4|hls)'\s*:\s*'([^']+)'/, html);
+    if (u && u.startsWith("aHR0")) u = b64(u);
+    if (!u) { try { const v = hx(/let\s+[0-9a-f]+\s*=\s*'(.*?)'/i, html); const j = JSON.parse(b64(v).split("").reverse().join("")); u = j.file; } catch (e) { /* nada */ } }
+    return u ? out(u, "https://voe.sx/") : null;
+  }
+
+  if (H_VIMEOS.test(h)) {
+    const ref = "https://" + h + "/";
+    html = await page(url, { Referer: ref });
+    if (/File not found|deleted|no longer available/i.test(html)) return null;
+    for (const t of packedOf(html)) {
+      u = hx(/file\s*:\s*["']([^"']+\.m3u8[^"']*)/i, t) || hx(/(https?:\/\/[^"']+\.m3u8[^"']*)/i, t) || hx(/file\s*:\s*["'](https?:[^"']+)["']/i, t);
+      if (u) return out(u, ref);
+    }
+    return null;
+  }
+
+  if (H_TAPE.test(h)) {
+    const tok = async (p) => {
+      const t = await page(p, { Referer: p });
+      if (/Video not found/i.test(t)) return null;
+      return hx(/getElementById\('\w+link'\)\.innerHTML\s*=\s*"[^"]+"\s*.*?\('[^']*?\/([^']+)'\)/s, t);
+    };
+    const norm = url.replace("/v/", "/e/").replace(/\/e\/e\//, "/e/");
+    let t = await tok(norm);
+    if (!t) t = await tok(norm.replace("/e/", "/v/"));
+    return t ? out("https://streamtape.com/" + t + "&stream=1", norm) : null;
+  }
+
+  if (H_LARE.test(h)) {
+    const id = hx(/\/[ev]\/(\w+)/, url);
+    if (!id) return null;
+    const r = await kino.fetch("https://streamlare.com/api/video/stream/get", { method: "POST", body: { form: { id } } });
+    let j = null;
+    try { j = JSON.parse(await r.text()); } catch (e) { /* nada */ }
+    u = j && j.result && j.result.file;
+    return u ? out(u, url) : null;
+  }
+
+  if (/(^|\.)ok\.ru$|okru\.link|odnoklassniki/i.test(h)) {
+    if (/okru\.link\/v2/.test(url)) {
+      const v = hx(/t=([\w.]+)/, url);
+      const r = await kino.fetch("https://apizz.okru.link/decoding", { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded", Origin: url }, body: { form: { video: v } } });
+      const d = await r.text();
+      u = hx(/"url":"(.*?)"/, d);
+      return u ? out(u) : null;
+    }
+    if (/okru\.link/.test(url)) {
+      const d = await page("https://okru.link/details.php?v=" + hx(/t=(\w+)/, url), { Referer: REF });
+      u = hx(/"file":"(.*?)"/, d);
+      return u ? out(u) : null;
+    }
+    html = await page(url, { Referer: "https://ok.ru/" });
+    u = okruMedia(html);
+    return u ? out(u, "https://ok.ru/") : null;
+  }
+
+  if (H_WISH.test(h) || H_HIDE.test(h) || /streamvid|vidstreamz|fastream|supervideo|vidmoly|mp4upload|uqload|vidoza|videzz/i.test(h)) {
+    let ref = REF, extra;
+    let p = url;
+    if (/uqload/i.test(h)) { ref = "https://uqload.com/"; }
+    if (/supervideo/i.test(h)) { ref = "https://supervideo.cc/"; if (!/\/e\//.test(p)) p = p.replace("supervideo.cc/", "supervideo.cc/e/"); }
+    if (/mp4upload/i.test(h) && !/embed-/.test(p)) p = p.replace(/mp4upload\.com\//, "mp4upload.com/embed-") + (/\.html/.test(p) ? "" : ".html");
+    const hdr = { Referer: ref };
+    if (/uqload/i.test(h)) hdr.Origin = ref;
+    if (/vidmoly/i.test(h)) {
+      p = p.replace("/embed-", "/").replace(/\/[dwv]\//, "/");
+      if (!/\.html/.test(p)) p += ".html";
+      hdr.cookie = "cf_turnstile_demo_pass_" + p.replace(/^https?:\/\/[^\/]+\//, "").replace(".html", "") + "=1";
+      hdr.Referer = REF;
+    }
+    html = await page(p, hdr);
+    if (!html || /File (?:was )?(?:not found|deleted)|no longer available|Video not found|>Security Check</i.test(html)) return null;
+    u = "";
+    if (/vidoza|videzz/i.test(h)) {
+      const s = hx(/sourcesCode\s*:\s*(\[\{.*?\}\])/s, html).replace(/(\w+):/g, '"$1":');
+      try { const arr = JSON.parse(s); u = (arr[arr.length - 1] || {}).src || (arr[arr.length - 1] || {}).file; } catch (e) { /* nada */ }
+    }
+    if (!u) u = fileOfPacked(html);
+    if (!u) u = hx(/sources\s*:\s*\[\s*\{\s*file\s*:\s*["']([^"']+)["']/, html) || hx(/sources\s*:\s*\[\s*["'](https?:[^"']+)["']/, html);
+    if (!u && /mp4upload/i.test(h)) u = hx(/"(https[^"]+\.mp4)"/, html) || hx(/"file":"([^"]+)/, html) || hx(/src:"([^"]+)/, html);
+    if (!u) return null;
+    if (/uqload|supervideo/i.test(h)) extra = { Origin: ref.replace(/\/$/, "") };
+    return out(u, /mp4upload/i.test(h) ? p : ref === REF ? p : ref, extra);
+  }
+  return null;
+}
+
+const HOSTER_RE = new RegExp([H_VOE, H_WISH, H_TAPE, H_HIDE, H_LARE, H_VIMEOS].map((r) => r.source).join("|") + "|(?:^|\\.)ok\\.ru$|okru\\.link|streamvid|vidstreamz|fastream|supervideo|vidmoly|mp4upload|uqload|vidoza|videzz", "i");
+const isHoster = (u) => HOSTER_RE.test(hostOf(u));
 
 // Devuelve el primer resultado que llegue (no el último): { v, i } o null si ninguno entrega nada.
 function firstSuccess(tasks) {
@@ -1494,7 +1672,7 @@ export async function episodes(ref) {
 // ---- Reproducción -------------------------------------------------------------------------------
 
 // Orden de los servidores: los que dan un enlace directo o HLS primero; los que piden verificación, al final.
-const HOST_RANK = [/goodstream/i, /vimeos|unlimplay/i, /ok\.ru/i, /mp4upload/i, /streamwish|wish|hgcloud|vidhide|dhcplay/i, /rumble|eintim|1a-1791|vids\.st/i, /voe|uqload|streamtape|upns/i, /filemoon|byse|dood|mixdrop|mdy|netu|waaw|mega/i];
+const HOST_RANK = [/goodstream/i, /vimeos|unlimplay/i, /ok\.ru/i, /mp4upload/i, /streamwish|wish|hgcloud|vidhide|dhcplay/i, /rumble|eintim|1a-1791|vids\.st/i, /voe|uqload|streamtape|upns|streamlare|vidoza|supervideo|vidmoly/i, /filemoon|byse|dood|mixdrop|mdy|netu|waaw|mega/i];
 const rank = (u) => { const h = hostOf(u); const i = HOST_RANK.findIndex((r) => r.test(h)); return i < 0 ? 5 : i; };
 
 async function candidatesOf(src, spec) {
