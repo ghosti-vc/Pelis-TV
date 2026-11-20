@@ -1,9 +1,9 @@
 {
   "id": "pelis-tv",
-  "name": "Pelis TV",
+  "name": "PelisTV",
   "description": "Películas, series, anime, series turcas y caricaturas en español desde muchas fuentes.",
   "author": "Ghosti-vc",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "apiVersion": 9,
   "entry": "plugin.js",
   "capabilities": [
