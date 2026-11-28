@@ -1,9 +1,9 @@
 {
   "id": "pelis-tv",
-  "name": "Cine TV",
+  "name": "CineTV",
   "description": "Películas, series, anime, series turcas y caricaturas en español desde muchas fuentes.",
   "author": "Ghosti-vc",
-  "version": "0.8.9",
+  "version": "0.8.10",
   "apiVersion": 9,
   "entry": "plugin.js",
   "capabilities": [
